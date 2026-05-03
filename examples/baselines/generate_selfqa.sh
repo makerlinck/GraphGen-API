@@ -1,1 +1,0 @@
-python3 -m baselines.SELF-QA.self-qa --input_file examples/input_examples/json_demo.json --output_file cache/data/self-qa.json

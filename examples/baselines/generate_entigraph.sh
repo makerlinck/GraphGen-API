@@ -1,1 +1,0 @@
-python3 -m baselines.EntiGraph.entigraph --input_file examples/input_examples/json_demo.json --output_file cache/data/entigraph.json

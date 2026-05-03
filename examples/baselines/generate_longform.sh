@@ -1,1 +1,0 @@
-python3 -m baselines.LongForm.longform --input_file examples/input_examples/json_demo.json --output_file cache/data/longform.json
