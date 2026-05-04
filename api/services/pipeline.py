@@ -191,6 +191,14 @@ def execute_pipeline(job_id: str, params: GenerateRequest, input_path: str):
 
         results = engine.execute(ds, output_dir=temp_dir)
 
+        # ── cancellation checkpoint (post-execution) ────────────────────
+        try:
+            if manager.get(job_id).get("status") == "cancelled":
+                return  # Job cancelled during execution, keep "cancelled" status
+        except FileNotFoundError:
+            return _fail(manager, job_id, "Job record lost during pipeline")
+        # ────────────────────────────────────────────────────────────────
+
         manager.update(job_id, progress=0.85)
 
         row_count = _collect_and_save(results, temp_dir, output_path)
@@ -203,13 +211,19 @@ def execute_pipeline(job_id: str, params: GenerateRequest, input_path: str):
                 "or knowledge graph too sparse."
             )
 
-        manager.update(
+        # Use update_if to avoid overwriting a concurrently cancelled status
+        applied = manager.update_if(
             job_id,
-            status="done",
-            finished_at=datetime.now(timezone.utc).isoformat(),
-            progress=1.0,
-            output_path=output_path,
+            condition={"status": "running"},
+            updates={
+                "status": "done",
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "progress": 1.0,
+                "output_path": output_path,
+            },
         )
+        if not applied:
+            return  # Status was changed externally (e.g. cancelled)
 
     except Exception:
         return _fail(
