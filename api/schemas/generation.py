@@ -51,14 +51,14 @@ class GenerateResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
     job_id: str
-    status: Literal["pending", "running", "done", "failed"] = "pending"
+    status: Literal["pending", "running", "done", "failed", "cancelled"] = "pending"
 
 
 class JobStatus(BaseModel):
     model_config = {"extra": "forbid"}
 
     job_id: str
-    status: Literal["pending", "running", "done", "failed"]
+    status: Literal["pending", "running", "done", "failed", "cancelled"]
     created_at: str
     started_at: Optional[str] = None
     finished_at: Optional[str] = None

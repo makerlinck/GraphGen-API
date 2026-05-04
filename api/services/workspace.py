@@ -1,10 +1,10 @@
 import os
 
-from api.config import settings
+from api.config import config
 
 
 def setup_workspace():
-    os.makedirs(settings.cache_dir, exist_ok=True)
-    os.makedirs(settings.jobs_dir, exist_ok=True)
-    os.makedirs(settings.log_dir, exist_ok=True)
-    os.makedirs(settings.datasets_dir, exist_ok=True)
+    os.makedirs(config.CACHE_DIR, exist_ok=True)
+    os.makedirs(config.JOBS_DIR, exist_ok=True)
+    os.makedirs(config.LOG_DIR, exist_ok=True)
+    os.makedirs(config.DATASETS_DIR, exist_ok=True)

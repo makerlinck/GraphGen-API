@@ -43,6 +43,21 @@ class JobManager:
         with self._get_lock(job_id):
             return self._read_status(job_dir)
 
+    def update_if(self, job_id: str, condition: dict, updates: dict) -> bool:
+        """Atomically apply updates only if current state matches condition.
+
+        Returns True if update was applied, False if condition not met.
+        """
+        job_dir = os.path.join(self.jobs_dir, job_id)
+        with self._get_lock(job_id):
+            current = self._read_status(job_dir)
+            for key, expected in condition.items():
+                if current.get(key) != expected:
+                    return False
+            current.update(updates)
+            self._write_status(job_dir, current)
+            return True
+
     def update(self, job_id: str, **kwargs):
         job_dir = os.path.join(self.jobs_dir, job_id)
         with self._get_lock(job_id):

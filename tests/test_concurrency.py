@@ -23,21 +23,32 @@ def manager():
 @pytest.fixture
 def client():
     with tempfile.TemporaryDirectory() as tmpdir:
-        _config.settings.jobs_dir = os.path.join(tmpdir, "jobs")
-        _config.settings.uploads_dir = os.path.join(tmpdir, "uploads")
-        _config.settings.cache_dir = tmpdir
-        _config.settings.log_dir = os.path.join(tmpdir, "logs")
-        os.makedirs(_config.settings.uploads_dir, exist_ok=True)
-        os.makedirs(_config.settings.jobs_dir, exist_ok=True)
+        _config.config.JOBS_DIR = os.path.join(tmpdir, "jobs")
+        _config.config.CACHE_DIR = tmpdir
+        _config.config.LOG_DIR = os.path.join(tmpdir, "logs")
+        _config.config.DATASETS_DIR = tmpdir
+        os.makedirs(_config.config.JOBS_DIR, exist_ok=True)
+        # Create a valid input file for job submission tests
+        input_path = os.path.join(tmpdir, "test.jsonl")
+        with open(input_path, "w", encoding="utf-8") as f:
+            f.write('{"content":"test"}\n')
         yield TestClient(app)
 
 
-def _upload_file(client, filename="test.jsonl"):
+def _submit_job(client, api_key="sk-test"):
     resp = client.post(
-        "/api/v1/upload",
-        files={"file": (filename, b'{"content":"test"}\n', "application/octet-stream")},
+        "/api/v1/jobs",
+        json={
+            "input_file": "test.jsonl",
+            "api_key": api_key,
+            "synthesizer_url": "https://api.example.com/v1",
+            "synthesizer_model": "gpt-4",
+            "mode": "atomic",
+            "data_format": "Alpaca",
+        },
     )
-    return resp.json()["file_id"]
+    assert resp.status_code == 202
+    return resp.json()["job_id"]
 
 
 # ── JobManager 并发安全 ──────────────────────────────────────────────────────
@@ -116,37 +127,13 @@ class TestJobManagerConcurrency:
 # ── API 路由并发 ─────────────────────────────────────────────────────────────
 
 class TestAPIConcurrency:
-    def test_concurrent_uploads(self, client):
-        """并发上传应该全部成功"""
-        def _upload(i):
-            return client.post(
-                "/api/v1/upload",
-                files={"file": (f"file_{i}.txt", b"data", "text/plain")},
-            )
-
-        with ThreadPoolExecutor(max_workers=16) as pool:
-            futures = [pool.submit(_upload, i) for i in range(50)]
-            results = [f.result() for f in futures]
-
-        file_ids = set()
-        for r in results:
-            assert r.status_code == 200
-            data = r.json()
-            assert "file_id" in data
-            file_ids.add(data["file_id"])
-            assert os.path.exists(data["path"])
-
-        assert len(file_ids) == 50
-
-    def test_concurrent_generate_submissions(self, client):
+    def test_concurrent_job_submissions(self, client):
         """并发提交生成任务"""
-        file_id = _upload_file(client)
-
         def _submit(i):
             return client.post(
-                "/api/v1/generate",
+                "/api/v1/jobs",
                 json={
-                    "file_id": file_id,
+                    "input_file": "test.jsonl",
                     "api_key": f"sk-{i}",
                     "synthesizer_url": "https://api.example.com/v1",
                     "synthesizer_model": "gpt-4",
@@ -170,22 +157,10 @@ class TestAPIConcurrency:
 
     def test_concurrent_status_queries(self, client):
         """并发查询作业状态"""
-        file_id = _upload_file(client)
-        resp = client.post(
-            "/api/v1/generate",
-            json={
-                "file_id": file_id,
-                "api_key": "sk-test",
-                "synthesizer_url": "https://api.example.com/v1",
-                "synthesizer_model": "gpt-4",
-                "mode": "atomic",
-                "data_format": "Alpaca",
-            },
-        )
-        job_id = resp.json()["job_id"]
+        job_id = _submit_job(client)
 
         def _query(_):
-            return client.get(f"/api/v1/generate/{job_id}/status")
+            return client.get(f"/api/v1/jobs/{job_id}")
 
         with ThreadPoolExecutor(max_workers=16) as pool:
             futures = [pool.submit(_query, _) for _ in range(50)]
@@ -197,20 +172,7 @@ class TestAPIConcurrency:
 
     def test_mixed_read_write_no_crash(self, client):
         """混合读写操作不应导致服务崩溃"""
-        file_id = _upload_file(client)
-
-        resp = client.post(
-            "/api/v1/generate",
-            json={
-                "file_id": file_id,
-                "api_key": "sk",
-                "synthesizer_url": "https://api.example.com/v1",
-                "synthesizer_model": "gpt-4",
-                "mode": "atomic",
-                "data_format": "Alpaca",
-            },
-        )
-        job_id = resp.json()["job_id"]
+        job_id = _submit_job(client)
 
         errors = []
         start_event = threading.Event()
@@ -219,17 +181,16 @@ class TestAPIConcurrency:
             try:
                 start_event.wait()
                 if i % 3 == 0:
-                    r = client.get(f"/api/v1/generate/{job_id}/status")
+                    r = client.get(f"/api/v1/jobs/{job_id}")
                     assert r.status_code == 200
                 elif i % 3 == 1:
                     r = client.get("/health")
                     assert r.status_code == 200
                 else:
-                    fid = _upload_file(client, f"worker_{i}.jsonl")
                     r = client.post(
-                        "/api/v1/generate",
+                        "/api/v1/jobs",
                         json={
-                            "file_id": fid,
+                            "input_file": "test.jsonl",
                             "api_key": f"sk-{i}",
                             "synthesizer_url": "https://api.example.com/v1",
                             "synthesizer_model": "gpt-4",

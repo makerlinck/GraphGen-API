@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import ray
 from dotenv import load_dotenv
 
-from api.config import settings
+from api.config import config
 from api.job_manager import JobManager
 from api.schemas.generation import GenerateRequest
 from graphgen.engine import Engine
@@ -138,11 +138,12 @@ def _setup_env(params: GenerateRequest):
 
 
 def execute_pipeline(job_id: str, params: GenerateRequest, input_path: str):
-    manager = JobManager(settings.jobs_dir)
+    from api.routes.jobs import _get_manager
+    manager = _get_manager()
     now = datetime.now(timezone.utc).isoformat()
 
     # output: automatically saved as {datasets_dir}/{job_id}.jsonl
-    datasets_dir = os.path.abspath(settings.datasets_dir)
+    datasets_dir = os.path.abspath(config.DATASETS_DIR)
     os.makedirs(datasets_dir, exist_ok=True)
     output_path = os.path.join(datasets_dir, f"{job_id}.jsonl")
 
@@ -153,22 +154,38 @@ def execute_pipeline(job_id: str, params: GenerateRequest, input_path: str):
         return _fail(manager, job_id, f"Input file not found: {input_path}")
 
     # ── setup workspace ──────────────────────────────────────────────────
-    temp_dir = os.path.join(settings.cache_dir, "work", job_id)
+    temp_dir = os.path.join(config.CACHE_DIR, "work", job_id)
     os.makedirs(temp_dir, exist_ok=True)
-    os.makedirs(settings.log_dir, exist_ok=True)
-    log_file = os.path.join(settings.log_dir, f"{job_id}.log")
+    os.makedirs(config.LOG_DIR, exist_ok=True)
+    log_file = os.path.join(config.LOG_DIR, f"{job_id}.log")
     driver_logger = set_logger(log_file, "GraphGen", if_stream=True)
     CURRENT_LOGGER_VAR.set(driver_logger)
 
     _setup_env(params)
-    config = _build_config(params, temp_dir, input_path)
+    pipeline_cfg = _build_config(params, temp_dir, input_path)
+
+    # ── cancellation checkpoint ─────────────────────────────────────────
+    try:
+        if manager.get(job_id).get("status") == "cancelled":
+            return _fail(manager, job_id, "Cancelled before pipeline started")
+    except FileNotFoundError:
+        return _fail(manager, job_id, "Job record lost before pipeline started")
+    # ────────────────────────────────────────────────────────────────────
 
     # ── run pipeline ─────────────────────────────────────────────────────
     manager.update(job_id, progress=0.05)
     engine = None
     try:
-        engine = Engine(config, operators)
+        engine = Engine(pipeline_cfg, operators)
         ds = ray.data.from_items([])
+
+        # ── cancellation checkpoint ─────────────────────────────────────
+        try:
+            if manager.get(job_id).get("status") == "cancelled":
+                return _fail(manager, job_id, "Cancelled before pipeline execution")
+        except FileNotFoundError:
+            return _fail(manager, job_id, "Job record lost during pipeline")
+        # ────────────────────────────────────────────────────────────────
 
         manager.update(job_id, progress=0.1)
 
@@ -203,6 +220,19 @@ def execute_pipeline(job_id: str, params: GenerateRequest, input_path: str):
         if engine:
             del engine
         gc.collect()
+        # Release Ray resources (actors, workers, shared memory)
+        if ray.is_initialized():
+            try:
+                ray.shutdown()
+            except Exception:
+                pass
+        # Clean up temporary working directory
+        import shutil
+        if os.path.isdir(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception:
+                pass
 
 
 def _fail(manager, job_id, error: str):

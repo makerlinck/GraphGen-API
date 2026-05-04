@@ -13,11 +13,11 @@ from api.main import app
 @pytest.fixture(autouse=True)
 def temp_dirs():
     with tempfile.TemporaryDirectory() as tmpdir:
-        _config.settings.jobs_dir = os.path.join(tmpdir, "jobs")
-        _config.settings.cache_dir = tmpdir
-        _config.settings.log_dir = os.path.join(tmpdir, "logs")
-        _config.settings.datasets_dir = tmpdir  # use temp dir as datasets
-        os.makedirs(_config.settings.jobs_dir, exist_ok=True)
+        _config.config.JOBS_DIR = os.path.join(tmpdir, "jobs")
+        _config.config.CACHE_DIR = tmpdir
+        _config.config.LOG_DIR = os.path.join(tmpdir, "logs")
+        _config.config.DATASETS_DIR = tmpdir  # use temp dir as datasets
+        os.makedirs(_config.config.JOBS_DIR, exist_ok=True)
         yield
 
 
@@ -30,7 +30,7 @@ def client():
 def input_file():
     """Create a valid input file in the temp datasets dir and return its name."""
     # Called within temp_dirs context, datasets_dir is already set to tmpdir
-    datasets = _config.settings.datasets_dir
+    datasets = _config.config.DATASETS_DIR
     filepath = os.path.join(datasets, "input.jsonl")
     with open(filepath, "w", encoding="utf-8") as f:
         f.write('{"content": "test document about machine learning"}\n')
@@ -113,7 +113,7 @@ class TestJobsRoutes:
         assert "path traversal" in response.json()["detail"].lower()
 
     def test_create_job_invalid_json(self, client):
-        datasets = _config.settings.datasets_dir
+        datasets = _config.config.DATASETS_DIR
         path = os.path.join(datasets, "bad.jsonl")
         with open(path, "w") as f:
             f.write("not valid json {{{")
@@ -132,7 +132,7 @@ class TestJobsRoutes:
         assert "invalid JSON" in response.json()["detail"]
 
     def test_create_job_missing_content_field(self, client):
-        datasets = _config.settings.datasets_dir
+        datasets = _config.config.DATASETS_DIR
         path = os.path.join(datasets, "alpaca.jsonl")
         with open(path, "w") as f:
             f.write('{"instruction":"do X","output":"result"}\n')
@@ -152,7 +152,7 @@ class TestJobsRoutes:
         assert "content" in detail or "missing required field" in detail
 
     def test_create_job_empty_file(self, client):
-        datasets = _config.settings.datasets_dir
+        datasets = _config.config.DATASETS_DIR
         path = os.path.join(datasets, "empty.jsonl")
         open(path, "w").close()
         response = client.post(

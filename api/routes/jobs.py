@@ -1,9 +1,10 @@
 import json
 import os
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from api.config import settings
+from api.config import config
 from api.job_manager import JobManager
 from api.schemas.generation import GenerateRequest, GenerateResponse, JobStatus
 from api.services.pipeline import execute_pipeline
@@ -11,13 +12,19 @@ from api.services.pipeline import execute_pipeline
 router = APIRouter(prefix="/api/v1", tags=["jobs"])
 
 
-def _get_manager():
-    return JobManager(settings.jobs_dir)
+_manager: JobManager | None = None
+
+
+def _get_manager() -> JobManager:
+    global _manager
+    if _manager is None:
+        _manager = JobManager(config.JOBS_DIR)
+    return _manager
 
 
 def _resolve_input(input_file: str) -> str:
     """Resolve input_file relative to datasets_dir. Rejects path traversal."""
-    datasets = os.path.abspath(settings.datasets_dir)
+    datasets = os.path.abspath(config.DATASETS_DIR)
     os.makedirs(datasets, exist_ok=True)
     resolved = os.path.normpath(os.path.join(datasets, input_file))
     if not resolved.startswith(datasets):
@@ -98,11 +105,27 @@ async def get_job(job_id: str):
 @router.delete("/jobs/{job_id}")
 async def cancel_job(job_id: str):
     manager = _get_manager()
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Try to cancel from pending state
+    if manager.update_if(
+        job_id,
+        condition={"status": "pending"},
+        updates={"status": "cancelled", "finished_at": now, "error": "Cancelled by user"},
+    ):
+        return {"job_id": job_id, "status": "cancelled"}
+
+    # Try to cancel from running state
+    if manager.update_if(
+        job_id,
+        condition={"status": "running"},
+        updates={"status": "cancelled", "finished_at": now, "error": "Cancelled by user"},
+    ):
+        return {"job_id": job_id, "status": "cancelled"}
+
+    # Job is already done/failed/cancelled, or doesn't exist
     try:
         data = manager.get(job_id)
+        return {"job_id": job_id, "status": data["status"]}
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    if data["status"] not in ("pending", "running"):
-        raise HTTPException(status_code=400, detail="Job already finished")
-    manager.update(job_id, status="failed", error="Cancelled by user")
-    return {"job_id": job_id, "status": "cancelled"}
